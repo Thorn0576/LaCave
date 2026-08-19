@@ -236,9 +236,10 @@
     #toast{bottom:80px}
     .card .openbtn{padding:11px 16px;font-size:14.5px}
     .qty button{width:34px;height:34px;font-size:18px}
-    /* popups: full width, anchored to the top, scrollable so nothing is stranded off screen */
-    .modal-bg{place-items:start center;padding:10px 8px 90px}
-    .modal{width:100%;max-width:100%;padding:18px 15px;margin:0}
+    /* popups on mobile: full-screen sheet that scrolls with a finger, so nothing is stranded */
+    .modal-bg{display:block;padding:0;overflow:hidden}
+    .modal{position:fixed;inset:0;width:100%;max-width:100%;height:100%;max-height:100%;margin:0;
+      border-radius:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:18px 15px 56px}
     .serving{gap:8px}
     .serving .sv{padding:9px 6px}
     .serving .sv .ic{font-size:17px}
@@ -260,6 +261,7 @@
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <div id="whoChip" class="whochip" onclick="openUserMenu()"></div>
       <button id="fbBtn" class="btn gold sm" onclick="openFeedback('new')">✍ Feedback</button>
+      <span id="verTag" style="font-size:10.5px;color:var(--faint);letter-spacing:.5px;align-self:center"></span>
     </div>
   </header>
 
@@ -404,6 +406,8 @@ function doUndo(){
   if(SYNC){ WINES.forEach(function(w){ apiPost('update',{sheet:'Wines', id:w.id, set:{qty:w.qty}}); }); }
 }
 
+const APP_VERSION = '1.0.4';
+
 /* ================= LIVE SYNC (Google Sheet backend) ================= */
 const API_URL = 'https://script.google.com/macros/s/AKfycbyOJmbZOAP7liXfXwt5i_lyWdWLLbW1Rh7FnGst2ojcG6EC_69C-0z7-yWWWEaY95gDFg/exec';
 const SYNC = /^https:\/\//.test(API_URL);
@@ -522,16 +526,44 @@ async function persistNewWine(nw){
   }
 }
 
+// Prefill the Add a Bottle page from URL parameters (used by the photo-to-cave Claude skill).
+// e.g. LaCave.html?add=1&name=...&producer=...&year=1998&color=Red&grape=...&origin=Bordeaux&qty=6&note=...
+function prefillFromURL(){
+  const p=new URLSearchParams(location.search);
+  if(!p.get('add')) return false;
+  go('add');
+  const set=(id,v)=>{const e=document.getElementById(id); if(e&&v!=null&&v!=='') e.value=v;};
+  set('a_name', p.get('name'));
+  set('a_prod', p.get('producer'));
+  set('a_year', p.get('year'));
+  const color=p.get('color'); const cEl=document.getElementById('a_color');
+  if(color&&cEl&&[...cEl.options].some(o=>o.value===color)){ cEl.value=color; cEl.dataset.touched='1'; }
+  set('a_grape', p.get('grape'));
+  const origin=p.get('origin'); const oEl=document.getElementById('a_origin');
+  if(origin&&oEl&&REGIONS[origin]) oEl.value=origin;
+  set('a_qty', p.get('qty')||'1');
+  const cave=p.get('cave'); const cvEl=document.getElementById('a_cave');
+  if(cave&&cvEl&&CAVES[cave]) cvEl.value=cave;
+  set('a_note', p.get('note'));
+  const d=document.getElementById('a_detect');
+  if(d) d.innerHTML='📷 <b style="color:var(--gold-lite)">Prefilled from a photo.</b> Review the fields, correct anything, choose the cave, then Add to cave.';
+  checkDup();
+  return true;
+}
+
 async function boot(){
+  const vt=document.getElementById('verTag'); if(vt) vt.textContent='v'+APP_VERSION;
   renderWhoChip();
   if(SYNC){
     setSync('loading');
     try{ await refreshFromSheet(); setSync('ok'); }
     catch(e){ console.error(e); setSync('err'); }
-    renderNav(); updateFbButton(); go('cave');
+    renderNav(); updateFbButton();
+    if(!prefillFromURL()) go('cave');
     startPolling();
   } else {
-    renderNav(); updateFbButton(); go('cave');
+    renderNav(); updateFbButton();
+    if(!prefillFromURL()) go('cave');
   }
 }
 
@@ -1183,7 +1215,7 @@ function openDetail(id){
         <button class="btn gold sm" onclick="openTasting(${id})">+ Log tasting</button>
       </div>
       ${ts.map(logItemHTML).join('')||'<div style="color:var(--faint);font-size:13px;padding:6px 0 12px">No tastings logged yet.</div>'}
-      <div style="margin-top:8px"><button class="btn ghost" onclick="closeModal()">Close</button></div>
+      <div style="margin-top:8px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn ghost" onclick="editWine(${id})">✎ Edit details</button><button class="btn ghost" onclick="closeModal()">Close</button></div>
     </div></div>`;
 }
 function saveCritic(id){
@@ -1197,6 +1229,50 @@ function saveProducer(id){
   apiPost('update',{sheet:'Wines', id:id, set:{producer:p}});
   openDetail(id);
   if(active==='cave')renderCave(); else if(active==='map')renderMap();
+}
+function editWine(id){
+  const w=WINES.find(x=>x.id===id); if(!w) return;
+  const esc=s=>(s||'').replace(/"/g,'&quot;');
+  const colorOpts=['Red','White','White (sweet)','Rosé'].map(c=>`<option ${w.color===c?'selected':''}>${c}</option>`).join('');
+  document.getElementById('modalHost').innerHTML=`
+   <div class="modal-bg" onclick="if(event.target===this)closeModal()">
+    <div class="modal">
+      <h2 class="serif" style="margin:0 0 2px">Edit wine</h2>
+      <div class="sub">Correct any detail. Changes save to the shared cave for everyone.</div>
+      <div class="form-grid">
+        <div class="field full"><label>Wine / Appellation</label><input id="e_name" value="${esc(w.name)}"></div>
+        <div class="field"><label>Producer</label><input id="e_prod" value="${esc(w.producer)}" placeholder="domaine / château"></div>
+        <div class="field"><label>Vintage</label><input id="e_year" type="number" value="${w.year||''}"></div>
+        <div class="field"><label>Colour</label><select id="e_color">${colorOpts}</select></div>
+        <div class="field"><label>Grape / Style</label><input id="e_grape" value="${esc(w.grape)}"></div>
+        <div class="field"><label>Cave</label><select id="e_cave">${caveOptions(w.cave)}</select></div>
+        <div class="field"><label>Serve temp</label><input id="e_temp" value="${esc(w.temp)}" placeholder="e.g. 16-17C"></div>
+        <div class="field full"><label>Region</label><input id="e_region" value="${esc(w.region)}"></div>
+        <div class="field full"><label>Note</label><input id="e_note" value="${esc(w.note)}" placeholder="optional"></div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap">
+        <button class="btn" onclick="saveWineEdit(${id})">Save changes</button>
+        <button class="btn ghost" onclick="openDetail(${id})">Cancel</button>
+      </div>
+    </div></div>`;
+}
+function saveWineEdit(id){
+  const w=WINES.find(x=>x.id===id); if(!w) return;
+  const gv=v=>(document.getElementById(v).value||'');
+  w.name=gv('e_name').trim()||w.name;
+  w.producer=gv('e_prod').trim();
+  w.year=+gv('e_year')||w.year;
+  w.color=gv('e_color');
+  w.grape=gv('e_grape').trim();
+  w.cave=gv('e_cave');
+  w.temp=gv('e_temp').trim();
+  w.region=gv('e_region').trim();
+  w.note=gv('e_note').trim();
+  apiPost('update',{sheet:'Wines', id:w.id, set:{
+    name:w.name, producer:w.producer, vintage:w.year, color:w.color, grape:w.grape,
+    cave:w.cave, serveTemp:w.temp, region:w.region, note:w.note}});
+  openDetail(id);
+  renderNav(); if(active==='cave')renderCave(); else if(active==='map')renderMap();
 }
 
 /* ---------- ADD BOTTLE ---------- */
